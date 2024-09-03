@@ -35,7 +35,7 @@ def depth_image_to_point_cloud(rgb, depth, scale, K, pose):
     u = u.astype(float)
     v = v.astype(float)
 
-    Z = depth.astype(float) / scale
+    Z = depth.astype(float) * scale
     X = (u - K[0, 2]) * Z / K[0, 0]
     Y = (v - K[1, 2]) * Z / K[1, 1]
 
@@ -60,47 +60,71 @@ def depth_image_to_point_cloud(rgb, depth, scale, K, pose):
 
     return points
 
+def ReadRT(poses_file):
+    data = np.loadtxt(poses_file, dtype=float, delimiter=' ')
+    # data like 3x4
+    # return 4x4
+    # return np.vstack((data, np.array([0, 0, 0, 1])))
+    data = np.linalg.inv(np.vstack((data, np.array([0, 0, 0, 1]))))
+    # print(data)
+    return data
+def ReadCam(filename):
+    data = np.zeros((3,3),dtype=np.float64)
+    with open(filename) as file:
+        lines = file.readlines()
+        row = 0
+        for line in lines:
+            if row == 0:
+                row+=1
+                continue
+            elif  row == 4:
+                break
+            list = line.strip('\n').split(' ')
+            data[row-1:] = list[0:3]
+            row+=1
+    print(data)
+    return  data
+
 
 # image_files: XXXXXX.png (RGB, 24-bit, PNG)
 # depth_files: XXXXXX.png (16-bit, PNG)
 # poses: camera-to-world, 4×4 matrix in homogeneous coordinates
-def build_point_cloud(dataset_path, scale, view_ply_in_world_coordinate):
-    K = np.fromfile(os.path.join(dataset_path, "K.txt"), dtype=float, sep="\n ")
-    K = np.reshape(K, newshape=(3, 3))
-    image_files = sorted(Path(os.path.join(dataset_path, "images")).files('*.png'))
-    depth_files = sorted(Path(os.path.join(dataset_path, "depth_maps")).files('*.png'))
+def build_point_cloud(dataset_path, scale):
+    K = ReadCam(os.path.join(dataset_path , "out/readme.txt"))
+    image_files = sorted(Path(os.path.join(dataset_path,"out/rgbd")).files('rgb_*.jpg'))
+    depth_files = sorted(Path(os.path.join(dataset_path, "out/rgbd")).files('depth_*.png'))
+    poses_files = sorted(Path(os.path.join(dataset_path, "out/pose_1")).files('RT_*.txt'))
 
-    if view_ply_in_world_coordinate:
-        poses = np.fromfile(os.path.join(dataset_path, "poses.txt"), dtype=float, sep="\n ")
-        poses = np.reshape(poses, newshape=(-1, 4, 4))
-    else:
-        poses = np.eye(4)
-
-    for i in tqdm(range(0, len(image_files))):
+    current_points_3D = []
+    # 间隔设置为5
+    # for i in tqdm([0,1]):
+    for i in tqdm(range(0, len(image_files),5)):
         image_file = image_files[i]
         depth_file = depth_files[i]
 
         rgb = cv2.imread(image_file)
         depth = cv2.imread(depth_file, -1).astype(np.uint16)
 
-        if view_ply_in_world_coordinate:
-            current_points_3D = depth_image_to_point_cloud(rgb, depth, scale=scale, K=K, pose=poses[i])
-        else:
-            current_points_3D = depth_image_to_point_cloud(rgb, depth, scale=scale, K=K, pose=poses)
-        save_ply_name = os.path.basename(os.path.splitext(image_files[i])[0]) + ".ply"
-        save_ply_path = os.path.join(dataset_path, "point_clouds")
+        current_points_3D += depth_image_to_point_cloud(rgb, depth, scale=scale, K=K, pose=ReadRT(poses_files[i]))
+    save_ply_name = os.path.basename(os.path.splitext(image_files[i])[0]) + ".ply"
+    save_ply_path = os.path.join(dataset_path, "point_clouds")
+    # 计算模型的AABB包围盒的两个顶点
 
-        if not os.path.exists(save_ply_path):  # 判断是否存在文件夹如果不存在则创建为文件夹
-            os.mkdir(save_ply_path)
-        write_point_cloud(os.path.join(save_ply_path, save_ply_name), current_points_3D)
+    min_vert = np.min(current_points_3D, axis=0)[:3]
+    max_vert = np.max(current_points_3D, axis=0)[:3]
+    print("min: ", min_vert)
+    print("max: ", max_vert)
+
+    if not os.path.exists(save_ply_path):  # 判断是否存在文件夹如果不存在则创建为文件夹
+        os.mkdir(save_ply_path)
+    # write_point_cloud(os.path.join(save_ply_path, save_ply_name), current_points_3D)
 
 
 if __name__ == '__main__':
-    dataset_folder = Path("dataset")
-    scene = Path("hololens")
-    # 如果view_ply_in_world_coordinate为True,那么点云的坐标就是在world坐标系下的坐标，否则就是在当前帧下的坐标
-    view_ply_in_world_coordinate = False
-    # 深度图对应的尺度因子，即深度图中存储的值与真实深度（单位为m）的比例, depth_map_value / real depth = scale_factor
-    # 不同数据集对应的尺度因子不同，比如TUM的scale_factor为5000， hololens的数据的scale_factor为1000, Apollo Scape数据的scale_factor为200
-    scale_factor = 1000.0
-    build_point_cloud(os.path.join(dataset_folder, scene), scale_factor, view_ply_in_world_coordinate)
+    index = "002"
+    dataset_folder = os.path.join("../../../fusai")
+    scene = index
+    scale_factor = 3000.0/65535.0
+    for i in range(1,7):
+        scene = "00" + str(i)
+        build_point_cloud(os.path.join(dataset_folder, scene), scale_factor)
